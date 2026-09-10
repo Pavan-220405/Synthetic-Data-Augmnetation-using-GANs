@@ -1,0 +1,87 @@
+"""2D GliGAN generator.
+
+The generator follows Ferreira et al.'s SwinUNETR-based generator, with the
+3D spatial dimension changed to 2D. Conditioning is explicit: the image and
+mask are concatenated along the channel dimension before entering the network.
+"""
+
+from __future__ import annotations
+
+import inspect
+from typing import Optional
+
+import torch
+from torch import Tensor, nn
+
+def concatenate_condition(image: Tensor, mask: Tensor) -> Tensor:
+    """Return the explicitly channel-concatenated image/mask condition."""
+
+    if image.ndim != 4 or mask.ndim != 4:
+        raise ValueError(
+            "Expected image and mask tensors with shape [B, C, H, W]."
+        )
+    if image.shape[0] != mask.shape[0] or image.shape[2:] != mask.shape[2:]:
+        raise ValueError("Image and mask batch/spatial dimensions must match.")
+    return torch.cat((image, mask), dim=1)
+
+
+class Generator(nn.Module):
+    """SwinUNETR generator for 3-channel images and a 1-channel mask."""
+
+    def __init__(
+        self,
+        image_channels: int = 3,
+        mask_channels: int = 1,
+        out_channels: int = 3,
+        feature_size: int = 48,
+        use_checkpoint: bool = False,
+        image_size: int | tuple[int, int] = 96,
+    ) -> None:
+        super().__init__()
+        self.image_channels = image_channels
+        self.mask_channels = mask_channels
+        self.in_channels = image_channels + mask_channels
+        self.out_channels = out_channels
+
+        try:
+            from monai.networks.nets import SwinUNETR
+        except ImportError as exc:  # pragma: no cover - depends on the environment
+            raise ImportError(
+                "Generator requires MONAI. Install it with `pip install monai`."
+            ) from exc
+
+        network_kwargs = dict(
+            spatial_dims=2,
+            in_channels=self.in_channels,
+            out_channels=out_channels,
+            feature_size=feature_size,
+            use_checkpoint=use_checkpoint,
+        )
+        # MONAI versions before the API change require img_size; newer
+        # versions infer the spatial size and reject that argument.
+        if "img_size" in inspect.signature(SwinUNETR).parameters:
+            size = (image_size, image_size) if isinstance(image_size, int) else image_size
+            network_kwargs["img_size"] = size
+        self.network = SwinUNETR(**network_kwargs)
+
+    def forward(self, image_or_condition: Tensor, mask: Optional[Tensor] = None) -> Tensor:
+        """Generate an image from ``[image, mask]`` or an already-concatenated input."""
+
+        if mask is not None:
+            condition = concatenate_condition(image_or_condition, mask)
+        else:
+            condition = image_or_condition
+            if condition.ndim != 4 or condition.shape[1] != self.in_channels:
+                raise ValueError(
+                    f"Expected concatenated input [B, {self.in_channels}, H, W]."
+                )
+        return self.network(condition)
+
+
+def build_generator(**kwargs) -> Generator:
+    """Factory kept small so notebooks and training scripts can share setup."""
+
+    return Generator(**kwargs)
+
+
+__all__ = ["Generator", "build_generator", "concatenate_condition"]

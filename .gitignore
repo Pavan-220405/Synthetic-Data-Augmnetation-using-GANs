@@ -1,0 +1,39 @@
+# Python caches and tooling
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Local editor and OS files
+.vscode/
+.idea/
+context.md
+.DS_Store
+
+# Training data and generated artifacts
+*data*/
+*DATA*/
+datasets/
+checkpoints/
+original_paper_scripts/
+outputs/
+artifacts/
+samples/
+runs/
+logs/
+
+# Model and medical-imaging artifacts
+*.pt
+*.pth
+*.ckpt
+*.nii
+*.nii.gz
