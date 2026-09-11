@@ -1,4 +1,9 @@
-"""Ferreira-style GliGAN losses."""
+"""Ferreira-style GliGAN losses.
+
+Training uses the BCE-with-logits formulation. This is the same binary
+cross-entropy objective, but with the sigmoid fused into the loss so CUDA AMP
+autocast is safe on Colab/Kaggle.
+"""
 
 from __future__ import annotations
 
@@ -22,7 +27,7 @@ def progressive_reconstruction_weight(
 
 
 class GliGANLoss:
-    """BCE adversarial losses plus L1 reconstruction loss.
+    """BCE-with-logits adversarial losses plus L1 reconstruction loss.
 
     The default weighting follows Ferreira's first-stage setup. Set
     ``reconstruction_max_weight=100`` for the second-stage schedule.
@@ -32,13 +37,18 @@ class GliGANLoss:
         self,
         reconstruction_max_weight: float = 5.0,
         progression_epochs: int = 1000,
-        from_logits: bool = False,
+        from_logits: bool = True,
     ) -> None:
         if reconstruction_max_weight < 1:
             raise ValueError("reconstruction_max_weight must be at least 1.")
         if progression_epochs < 0:
             raise ValueError("progression_epochs cannot be negative.")
-        self.adversarial = nn.BCEWithLogitsLoss() if from_logits else nn.BCELoss()
+        if not from_logits:
+            raise ValueError(
+                "GliGANLoss is logits-only for training. Build the discriminator "
+                "with use_sigmoid=False and use BCEWithLogitsLoss."
+            )
+        self.adversarial = nn.BCEWithLogitsLoss()
         self.reconstruction = nn.L1Loss()
         self.reconstruction_max_weight = reconstruction_max_weight
         self.progression_epochs = progression_epochs

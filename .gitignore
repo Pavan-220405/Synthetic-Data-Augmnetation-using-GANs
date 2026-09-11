@@ -10,7 +10,7 @@ __pycache__/
 # Virtual environments
 .venv/
 venv/
-env/
+*env*/
 ENV/
 
 # Local editor and OS files
@@ -37,3 +37,4 @@ logs/
 *.ckpt
 *.nii
 *.nii.gz
+*.pdf
