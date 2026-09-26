@@ -31,8 +31,7 @@ class TrainConfig:
     feature_size: int = 48
     discriminator_channels: int = 768
     use_checkpoint: bool = False
-    # Keep discriminator outputs as logits during training. This pairs with
-    # BCEWithLogitsLoss and is safe under CUDA autocast/AMP.
+    # Hinge GAN requires raw discriminator scores (no sigmoid).
     use_sigmoid: bool = False
     learning_rate: float = 1e-4
     weight_decay: float = 1e-5
@@ -40,8 +39,9 @@ class TrainConfig:
     epochs: int = 100
     generator_updates: int = 2
     discriminator_updates: int = 1
-    reconstruction_max_weight: float = 5.0
-    reconstruction_progression_epochs: int = 1000
+    lambda_adv: float = 1.0
+    lambda_cell: float = 1.0
+    lambda_bg: float = 1.0
     amp: bool = True
     show_progress: bool = True
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
@@ -74,8 +74,8 @@ class TrainConfig:
             raise ValueError("learning_rate must be positive.")
         if self.use_sigmoid:
             raise ValueError(
-                "Training must use discriminator logits: set use_sigmoid=False. "
-                "This keeps BCEWithLogitsLoss safe under AMP on Colab/Kaggle."
+                "Hinge GAN training requires raw discriminator scores: "
+                "set use_sigmoid=False."
             )
 
 
@@ -104,8 +104,8 @@ def _first(batch: Mapping[str, Any], names: tuple[str, ...]) -> Any:
     raise KeyError(f"Batch is missing one of: {', '.join(names)}")
 
 
-def unpack_batch(batch: Any) -> tuple[Tensor, Tensor, Tensor]:
-    """Normalize supported batch formats to ``(original, noisy, label)``."""
+def unpack_batch(batch: Any) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """Normalize supported batch formats to ``(original, noisy, label, cell_mask)``."""
 
     if isinstance(batch, Mapping):
         original = _first(
@@ -117,15 +117,16 @@ def unpack_batch(batch: Any) -> tuple[Tensor, Tensor, Tensor]:
             ("noisy_image", "noised_image", "noisy", "input_image", "scan_t1ce_noisy"),
         )
         label = _first(batch, ("label", "rgb_label", "target_label", "label_crop_pad"))
-    elif isinstance(batch, (tuple, list)) and len(batch) == 3:
-        original, noisy, label = batch
+        cell_mask = _first(batch, ("cell_mask", "cell_masks", "flood_fill_mask"))
+    elif isinstance(batch, (tuple, list)) and len(batch) == 4:
+        original, noisy, label, cell_mask = batch
     else:
         raise TypeError(
             "Each batch must be a mapping or a tuple/list: "
-            "(original_image, noisy_image, label)."
+            "(original_image, noisy_image, label, cell_mask)."
         )
 
-    return original.float(), noisy.float(), label.float()
+    return original.float(), noisy.float(), label.float(), cell_mask.float()
 
 
 def _set_requires_grad(module: nn.Module, enabled: bool) -> None:
@@ -143,6 +144,7 @@ def validate_training_batch(
     original: Tensor,
     noisy: Tensor,
     label: Tensor,
+    cell_mask: Tensor,
     image_channels: int = 3,
     label_channels: int = 3,
     image_size: Optional[int] = 96,
@@ -153,7 +155,7 @@ def validate_training_batch(
     intentionally left to the future data pipeline.
     """
 
-    tensors = (original, noisy, label)
+    tensors = (original, noisy, label, cell_mask)
     if any(tensor.ndim != 4 for tensor in tensors):
         raise ValueError("Expected [B, C, H, W] tensors for original, noisy, and label.")
     if original.shape != noisy.shape:
@@ -164,6 +166,12 @@ def validate_training_batch(
         raise ValueError(f"Expected label shape [B, {label_channels}, H, W], got {label.shape}.")
     if label.shape[2:] != original.shape[2:]:
         raise ValueError("Label and image spatial dimensions must match.")
+    if cell_mask.ndim != 4:
+        raise ValueError(f"Expected cell_mask [B,1,H,W], got {cell_mask.shape}.")
+    if cell_mask.shape[0] != original.shape[0] or cell_mask.shape[1] != 1:
+        raise ValueError(f"Expected cell_mask shape [B,1,H,W], got {cell_mask.shape}.")
+    if cell_mask.shape[2:] != original.shape[2:]:
+        raise ValueError("Cell mask and image spatial dimensions must match.")
     if image_size is not None and original.shape[2:] != (image_size, image_size):
         raise ValueError(
             f"Expected spatial size {(image_size, image_size)} for SwinUNETR/discriminator, "
@@ -204,7 +212,8 @@ def _format_epoch_summary(
         f"Epoch {epoch + 1:03d}/{total_epochs:03d} | "
         f"loss_G={metrics['loss_G']:.6f} | "
         f"loss_D={metrics['loss_D']:.6f} | "
-        f"loss_recons={metrics['loss_recons']:.6f} | "
+        f"loss_cell={metrics['loss_cell']:.6f} | "
+        f"loss_bg={metrics['loss_bg']:.6f} | "
         f"loss_adv_G={metrics['loss_adv_G']:.6f}"
     )
 
@@ -227,7 +236,13 @@ def train_one_epoch(
 ) -> dict[str, float]:
     generator.train()
     discriminator.train()
-    totals = {"loss_G": 0.0, "loss_D": 0.0, "loss_recons": 0.0, "loss_adv_G": 0.0}
+    totals = {
+        "loss_G": 0.0,
+        "loss_D": 0.0,
+        "loss_cell": 0.0,
+        "loss_bg": 0.0,
+        "loss_adv_G": 0.0,
+    }
     batches = 0
 
     progress = _progress_bar(
@@ -239,11 +254,15 @@ def train_one_epoch(
     )
 
     for batch in progress:
-        original, noisy, label = (item.to(device, non_blocking=True) for item in unpack_batch(batch))
+        original, noisy, label, cell_mask = (
+            item.to(device, non_blocking=True)
+            for item in unpack_batch(batch)
+        )
         validate_training_batch(
             original,
             noisy,
             label,
+            cell_mask,
             image_channels=generator.image_channels,
             label_channels=generator.label_channels,
             image_size=image_size,
@@ -280,8 +299,8 @@ def train_one_epoch(
                         f"got {generated.shape}."
                     )
                 fake_scores = discriminator(generated, label)
-                loss_g, loss_recons, loss_adv_g, _ = loss_fn.generator(
-                    generated, original, fake_scores, epoch
+                loss_g, loss_cell, loss_bg, loss_adv_g = loss_fn.generator(
+                    generated, original, fake_scores, cell_mask
                 )
             if scaler is not None and amp and device.type == "cuda":
                 scaler.scale(loss_g).backward()
@@ -294,14 +313,16 @@ def train_one_epoch(
 
         totals["loss_G"] += float(loss_g.detach().cpu())
         totals["loss_D"] += float(loss_d.detach().cpu())
-        totals["loss_recons"] += float(loss_recons.detach().cpu())
+        totals["loss_cell"] += float(loss_cell.detach().cpu())
+        totals["loss_bg"] += float(loss_bg.detach().cpu())
         totals["loss_adv_G"] += float(loss_adv_g.detach().cpu())
         batches += 1
         if hasattr(progress, "set_postfix"):
             progress.set_postfix(
                 loss_G=totals["loss_G"] / batches,
                 loss_D=totals["loss_D"] / batches,
-                recons=totals["loss_recons"] / batches,
+                cell=totals["loss_cell"] / batches,
+                bg=totals["loss_bg"] / batches,
                 adv_G=totals["loss_adv_G"] / batches,
             )
 
@@ -355,9 +376,9 @@ def fit(loader, config: Optional[TrainConfig] = None) -> tuple[Generator, Discri
         betas=config.betas,
     )
     loss_fn = GliGANLoss(
-        reconstruction_max_weight=config.reconstruction_max_weight,
-        progression_epochs=config.reconstruction_progression_epochs,
-        from_logits=True,
+        lambda_adv=config.lambda_adv,
+        lambda_cell=config.lambda_cell,
+        lambda_bg=config.lambda_bg,
     )
     scaler = torch.amp.GradScaler("cuda", enabled=config.amp and device.type == "cuda")
     history = []

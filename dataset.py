@@ -5,9 +5,10 @@ The default project layout is a flat prepared-data directory:
     data/
       images/
       noised_images/
-      masks/
+      masks/              # RGB label mask used as G/D conditioning
+      cell_masks/         # flood-fill cell mask (1=cell, 0=background)
 
-Each sample is matched by filename across those three folders.
+Each sample is matched by filename across all five paths.
 """
 
 from __future__ import annotations
@@ -29,12 +30,24 @@ def load_rgb_tensor(path: str | Path) -> Tensor:
     return torch.from_numpy(array).permute(2, 0, 1)
 
 
-class GliGANDataset(Dataset):
-    """Read prepared RGB image/noisy-image/RGB-label samples.
+def load_cell_mask_tensor(path: str | Path) -> Tensor:
+    """Load a flood-fill cell mask as a float tensor with shape [1, H, W].
 
-    The preferred layout is ``root/images``, ``root/noised_images``, and
-    ``root/masks``. The older nested ``root/*/*/images`` layout is still
-    accepted as a fallback so existing prepared exports remain usable.
+    The stored mask may be binary (0/1), 8-bit (0/255), or RGB. It is
+    normalized to [0, 1] here; the loss binarizes it again defensively.
+    """
+
+    array = np.array(Image.open(path).convert("L"), dtype=np.float32) / 255.0
+    return torch.from_numpy(array).unsqueeze(0)
+
+
+class GliGANDataset(Dataset):
+    """Read prepared RGB image/noisy-image/RGB-label/cell-mask samples.
+
+    The preferred layout is ``root/images``, ``root/noised_images``,
+    ``root/masks`` (RGB label), and ``root/cell_masks`` (flood-fill cell mask).
+    The older nested ``root/*/*/images`` layout is still accepted as a
+    fallback so existing prepared exports remain usable.
     """
 
     def __init__(
@@ -48,54 +61,70 @@ class GliGANDataset(Dataset):
         if not self.samples:
             raise ValueError(f"No prepared GliGAN samples found under {self.root.resolve()}.")
 
-    def _collect_samples(self) -> list[tuple[Path, Path, Path, str]]:
+    def _collect_samples(self) -> list[tuple[Path, Path, Path, Path, str]]:
         flat_samples = self._collect_flat_samples()
         if flat_samples:
             return flat_samples
         return self._collect_nested_samples()
 
-    def _collect_flat_samples(self) -> list[tuple[Path, Path, Path, str]]:
+    def _collect_flat_samples(self) -> list[tuple[Path, Path, Path, Path, str]]:
         samples = []
         images_dir = self.root / "images"
         noised_dir = self.root / "noised_images"
         labels_dir = self.root / "masks"
-        if not images_dir.is_dir() or not noised_dir.is_dir() or not labels_dir.is_dir():
+        cell_masks_dir = self.root / "cell_masks"
+        if (
+            not images_dir.is_dir()
+            or not noised_dir.is_dir()
+            or not labels_dir.is_dir()
+            or not cell_masks_dir.is_dir()
+        ):
             return samples
 
         for image_path in sorted(images_dir.glob("*.png")):
             noised_path = noised_dir / image_path.name
             label_path = labels_dir / image_path.name
-            if noised_path.exists() and label_path.exists():
-                samples.append((image_path, noised_path, label_path, self.root.name))
+            cell_mask_path = cell_masks_dir / image_path.name
+            if noised_path.exists() and label_path.exists() and cell_mask_path.exists():
+                samples.append((image_path, noised_path, label_path, cell_mask_path, self.root.name))
         return samples
 
-    def _collect_nested_samples(self) -> list[tuple[Path, Path, Path, str]]:
+    def _collect_nested_samples(self) -> list[tuple[Path, Path, Path, Path, str]]:
         samples = []
         for images_dir in sorted(self.root.glob("*/*/images")):
             sample_root = images_dir.parent
             noised_dir = sample_root / "noised_images"
             labels_dir = sample_root / "masks"
+            cell_masks_dir = sample_root / "cell_masks"
             class_name = sample_root.parent.name
 
-            if not noised_dir.is_dir() or not labels_dir.is_dir():
+            if (
+                not noised_dir.is_dir()
+                or not labels_dir.is_dir()
+                or not cell_masks_dir.is_dir()
+            ):
                 continue
 
             for image_path in sorted(images_dir.glob("*.png")):
                 noised_path = noised_dir / image_path.name
                 label_path = labels_dir / image_path.name
-                if noised_path.exists() and label_path.exists():
-                    samples.append((image_path, noised_path, label_path, class_name))
+                cell_mask_path = cell_masks_dir / image_path.name
+                if noised_path.exists() and label_path.exists() and cell_mask_path.exists():
+                    samples.append(
+                        (image_path, noised_path, label_path, cell_mask_path, class_name)
+                    )
         return samples
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, index: int) -> dict[str, Tensor | str]:
-        image_path, noised_path, label_path, class_name = self.samples[index]
+        image_path, noised_path, label_path, cell_mask_path, class_name = self.samples[index]
         item: dict[str, Tensor | str] = {
             "original_image": load_rgb_tensor(image_path),
             "noisy_image": load_rgb_tensor(noised_path),
             "label": load_rgb_tensor(label_path),
+            "cell_mask": load_cell_mask_tensor(cell_mask_path),
             "class_name": class_name,
         }
 
@@ -125,4 +154,4 @@ def build_dataloader(
     )
 
 
-__all__ = ["GliGANDataset", "build_dataloader", "load_rgb_tensor"]
+__all__ = ["GliGANDataset", "build_dataloader", "load_rgb_tensor", "load_cell_mask_tensor"]

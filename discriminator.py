@@ -22,10 +22,7 @@ class Discriminator(nn.Module):
     """Ferreira-style five-layer spectral-normalized 2D discriminator.
 
     The discriminator receives the image and RGB label concatenated as
-    channels. Its final output is one channel: a real/fake score. With the
-    Set ``use_sigmoid=False`` for AMP-safe training with
-    ``BCEWithLogitsLoss``. Enable sigmoid only when probabilities are needed
-    for inference or explicit non-AMP ``BCELoss`` experiments.
+    channels. Its final output is one channel: a real/fake score.
     """
 
     def __init__(
