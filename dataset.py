@@ -49,7 +49,7 @@ class GliGANDataset(Dataset):
     The preferred layout is ``root/images``, ``root/noised_images``,
     ``root/masks`` (RGB label), and ``root/cell_masks`` (flood-fill cell mask).
     The older nested ``root/*/*/images`` layout is still accepted as a
-    fallback so existing prepared exports remain usable.
+    fallback when each sample root also contains ``cell_masks``.
     """
 
     def __init__(
@@ -61,6 +61,9 @@ class GliGANDataset(Dataset):
         self.transform = transform
         self.samples = self._collect_samples()
         if not self.samples:
+            migration_error = self._missing_cell_masks_migration_error()
+            if migration_error is not None:
+                raise ValueError(migration_error)
             raise ValueError(f"No prepared GliGAN samples found under {self.root.resolve()}.")
 
     def _collect_samples(self) -> list[tuple[Path, Path, Path, Path, str]]:
@@ -116,6 +119,35 @@ class GliGANDataset(Dataset):
                         (image_path, noised_path, label_path, cell_mask_path, class_name)
                     )
         return samples
+
+    def _missing_cell_masks_migration_error(self) -> Optional[str]:
+        images_dir = self.root / "images"
+        noised_dir = self.root / "noised_images"
+        labels_dir = self.root / "masks"
+        cell_masks_dir = self.root / "cell_masks"
+        if (
+            images_dir.is_dir()
+            and noised_dir.is_dir()
+            and labels_dir.is_dir()
+            and not cell_masks_dir.is_dir()
+        ):
+            return (
+                f"Prepared data under {self.root.resolve()} is missing the required "
+                "'cell_masks' directory. Generate it with create_masks.py before training."
+            )
+
+        for nested_images_dir in sorted(self.root.glob("*/*/images")):
+            sample_root = nested_images_dir.parent
+            if (
+                (sample_root / "noised_images").is_dir()
+                and (sample_root / "masks").is_dir()
+                and not (sample_root / "cell_masks").is_dir()
+            ):
+                return (
+                    f"Prepared sample directory {sample_root.resolve()} is missing the required "
+                    "'cell_masks' directory. Generate it with create_masks.py before training."
+                )
+        return None
 
     def __len__(self) -> int:
         return len(self.samples)
