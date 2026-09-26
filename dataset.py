@@ -37,7 +37,9 @@ def load_cell_mask_tensor(path: str | Path) -> Tensor:
     normalized to [0, 1] here; the loss binarizes it again defensively.
     """
 
-    array = np.array(Image.open(path).convert("L"), dtype=np.float32) / 255.0
+array = np.array(Image.open(path).convert("L"), dtype=np.float32)
+if array.max() > 1.0:
+    array /= 255.0
     return torch.from_numpy(array).unsqueeze(0)
 
 
