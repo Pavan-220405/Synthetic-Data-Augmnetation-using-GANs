@@ -12,6 +12,7 @@ OUTPUT_ROOT = Path("data")
 IMAGE_DIR = OUTPUT_ROOT / "images"
 MASK_DIR = OUTPUT_ROOT / "masks"
 NOISED_DIR = OUTPUT_ROOT / "noised_images"
+LABEL_DIR = OUTPUT_ROOT / "labels"
 
 
 # ============================================================
@@ -21,6 +22,7 @@ NOISED_DIR = OUTPUT_ROOT / "noised_images"
 IMAGE_DIR.mkdir(parents=True, exist_ok=True)
 MASK_DIR.mkdir(parents=True, exist_ok=True)
 NOISED_DIR.mkdir(parents=True, exist_ok=True)
+LABEL_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ============================================================
@@ -38,6 +40,7 @@ for images_dir in SOURCE_ROOT.glob("*/*/images"):
 
     masks_dir = subject_dir / "masks"
     noised_images_dir = subject_dir / "noised_images"
+    labels_dir = subject_dir / "labels"
 
     if not masks_dir.is_dir() or not noised_images_dir.is_dir():
         print(f"Skipping {subject_dir}: missing masks/noised_images")
@@ -66,6 +69,7 @@ for images_dir in SOURCE_ROOT.glob("*/*/images"):
         destination_image = IMAGE_DIR / filename
         destination_mask = MASK_DIR / filename
         destination_noised = NOISED_DIR / filename
+        destination_label = LABEL_DIR / f"{image_path.stem}.txt"
 
         # ----------------------------------------------------
         # Prevent accidental overwriting if filenames collide
@@ -85,6 +89,7 @@ for images_dir in SOURCE_ROOT.glob("*/*/images"):
             destination_image = IMAGE_DIR / new_filename
             destination_mask = MASK_DIR / new_filename
             destination_noised = NOISED_DIR / new_filename
+            destination_label = LABEL_DIR / f"{Path(new_filename).stem}.txt"
 
         # ----------------------------------------------------
         # Copy the three corresponding files
@@ -93,6 +98,15 @@ for images_dir in SOURCE_ROOT.glob("*/*/images"):
         shutil.copy2(image_path, destination_image)
         shutil.copy2(mask_path, destination_mask)
         shutil.copy2(noised_path, destination_noised)
+
+        # Copy the matching YOLO label when it exists.
+        # Labels are optional here because older GLIGAN_DATA datasets
+        # may not contain a labels/ directory.
+        source_label = labels_dir / f"{image_path.stem}.txt"
+        if source_label.exists():
+            shutil.copy2(source_label, destination_label)
+        else:
+            print(f"  WARNING: label missing for {subject_name}/{image_path.stem}.txt")
 
         total += 1
 
@@ -113,3 +127,4 @@ print(f"Samples skipped: {skipped}")
 print(f"\nImages       : {IMAGE_DIR.resolve()}")
 print(f"Masks        : {MASK_DIR.resolve()}")
 print(f"Noised images: {NOISED_DIR.resolve()}")
+print(f"Labels       : {LABEL_DIR.resolve()}")

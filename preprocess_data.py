@@ -414,6 +414,41 @@ def save_png(array, path):
         Image.fromarray(array, mode="RGB").save(path)
 
 
+def save_yolo_label(path, class_id, bbox, image_size=CROP_SIZE):
+    """
+    Save one YOLO annotation for the selected object in the 96x96 crop.
+
+    bbox is (x1, y1, x2, y2) in crop pixel coordinates.
+    YOLO format:
+        class_id x_center y_center width height
+
+    Coordinates are normalized to [0, 1].
+    """
+    x1, y1, x2, y2 = bbox
+
+    bw = max(0.0, float(x2 - x1))
+    bh = max(0.0, float(y2 - y1))
+
+    if bw <= 0 or bh <= 0:
+        raise ValueError(f"Invalid bbox for YOLO label: {bbox}")
+
+    xc = (float(x1) + float(x2)) / 2.0
+    yc = (float(y1) + float(y2)) / 2.0
+
+    xc /= image_size
+    yc /= image_size
+    bw /= image_size
+    bh /= image_size
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with path.open("w") as f:
+        f.write(
+            f"{class_id} "
+            f"{xc:.6f} {yc:.6f} {bw:.6f} {bh:.6f}\n"
+        )
+
+
 # ============================================================
 # MAIN
 # ============================================================
@@ -602,6 +637,18 @@ def main():
                     output_base /
                     "noised_images" /
                     f"{sample_name}.png",
+                )
+
+                # Save the selected object's YOLO bbox in the 96x96 crop
+                # coordinate system. This is the bbox that was actually used
+                # to create the target label and noise region.
+                save_yolo_label(
+                    output_base /
+                    "labels" /
+                    f"{sample_name}.txt",
+                    class_id,
+                    crop_bbox,
+                    CROP_SIZE,
                 )
 
                 total_samples += 1
