@@ -1,84 +1,164 @@
-"""Ferreira-style GliGAN losses.
+"""GliGAN losses for the new 2D conditional pipeline.
 
-Training uses the BCE-with-logits formulation. This is the same binary
-cross-entropy objective, but with the sigmoid fused into the loss so CUDA AMP
-autocast is safe on Colab/Kaggle.
+Losses:
+    - Hinge adversarial loss
+    - Cell-masked L1 reconstruction loss
+    - Background-masked L1 reconstruction loss
+
+The small RGB label mask is NOT used here. It remains conditioning
+information for G and D. The cell mask is the flood-fill mask:
+1 = cell, 0 = black background.
 """
 
 from __future__ import annotations
 
 import torch
-from torch import Tensor, nn
+from torch import Tensor
 
 
-def progressive_reconstruction_weight(
-    epoch: int,
-    maximum_weight: float,
-    progression_epochs: int = 1000,
-) -> float:
-    """Linearly increase L1 weight from 1 to ``maximum_weight``."""
+def masked_l1(
+    generated: Tensor,
+    target: Tensor,
+    mask: Tensor,
+    eps: float = 1e-8,
+) -> Tensor:
+    """Normalized L1 error inside a spatial mask."""
+    if generated.shape != target.shape:
+        raise ValueError(
+            f"generated and target must have the same shape, "
+            f"got {generated.shape} and {target.shape}"
+        )
 
-    if maximum_weight < 1:
-        raise ValueError("maximum_weight must be at least 1.")
-    if progression_epochs <= 0:
-        return float(maximum_weight)
-    weight = 1.0 + ((maximum_weight - 1.0) / progression_epochs) * epoch
-    return min(float(maximum_weight), weight)
+    if mask.ndim != 4:
+        raise ValueError(
+            f"mask must be [B,1,H,W] or [B,C,H,W], got {mask.shape}"
+        )
+
+    if mask.shape[0] != generated.shape[0]:
+        raise ValueError("mask batch size must match generated/target")
+
+    if mask.shape[-2:] != generated.shape[-2:]:
+        raise ValueError("mask spatial size must match generated/target")
+
+    mask = mask.to(device=generated.device, dtype=generated.dtype)
+
+    # Broadcast [B,1,H,W] mask over all image channels.
+    if mask.shape[1] == 1 and generated.shape[1] != 1:
+        mask = mask.expand(-1, generated.shape[1], -1, -1)
+    elif mask.shape[1] != generated.shape[1]:
+        raise ValueError(
+            f"mask channels must be 1 or {generated.shape[1]}, "
+            f"got {mask.shape[1]}"
+        )
+
+    error = torch.abs(generated - target) * mask
+denominator = mask.sum().clamp_min(torch.finfo(mask.dtype).eps)
+
+    return error.sum() / denominator
 
 
 class GliGANLoss:
-    """BCE-with-logits adversarial losses plus L1 reconstruction loss.
+    """Hinge GAN + cell/background masked L1.
 
-    The default weighting follows Ferreira's first-stage setup. Set
-    ``reconstruction_max_weight=100`` for the second-stage schedule.
+    Generator:
+        L_G = lambda_adv * L_adv
+            + lambda_cell * L_cell
+            + lambda_bg * L_bg
+
+    L_adv  = -mean(D(fake, label))
+    L_cell = masked L1(fake, target, cell_mask)
+    L_bg   = masked L1(fake, target, 1 - cell_mask)
+
+    The RGB label remains a conditioning input to G and D.
     """
 
     def __init__(
         self,
-        reconstruction_max_weight: float = 5.0,
-        progression_epochs: int = 1000,
-        from_logits: bool = True,
+        lambda_adv: float = 1.0,
+        lambda_cell: float = 1.0,
+        lambda_bg: float = 1.0,
+        eps: float = 1e-8,
     ) -> None:
-        if reconstruction_max_weight < 1:
-            raise ValueError("reconstruction_max_weight must be at least 1.")
-        if progression_epochs < 0:
-            raise ValueError("progression_epochs cannot be negative.")
-        if not from_logits:
-            raise ValueError(
-                "GliGANLoss is logits-only for training. Build the discriminator "
-                "with use_sigmoid=False and use BCEWithLogitsLoss."
-            )
-        self.adversarial = nn.BCEWithLogitsLoss()
-        self.reconstruction = nn.L1Loss()
-        self.reconstruction_max_weight = reconstruction_max_weight
-        self.progression_epochs = progression_epochs
-        self.from_logits = from_logits
+        if lambda_adv < 0:
+            raise ValueError("lambda_adv must be non-negative.")
+        if lambda_cell < 0:
+            raise ValueError("lambda_cell must be non-negative.")
+        if lambda_bg < 0:
+            raise ValueError("lambda_bg must be non-negative.")
+        if eps <= 0:
+            raise ValueError("eps must be positive.")
+
+        self.lambda_adv = float(lambda_adv)
+        self.lambda_cell = float(lambda_cell)
+        self.lambda_bg = float(lambda_bg)
+        self.eps = float(eps)
 
     def discriminator(
         self,
         real_scores: Tensor,
         fake_scores: Tensor,
     ) -> tuple[Tensor, Tensor, Tensor]:
-        real_loss = self.adversarial(real_scores, torch.ones_like(real_scores))
-        fake_loss = self.adversarial(fake_scores, torch.zeros_like(fake_scores))
-        return real_loss + fake_loss, real_loss, fake_loss
+        """Hinge discriminator loss."""
+        real_loss = torch.relu(1.0 - real_scores).mean()
+        fake_loss = torch.relu(1.0 + fake_scores).mean()
+        total = real_loss + fake_loss
+
+        return total, real_loss, fake_loss
 
     def generator(
         self,
         generated: Tensor,
         original: Tensor,
         fake_scores: Tensor,
-        epoch: int,
-    ) -> tuple[Tensor, Tensor, Tensor, float]:
-        reconstruction_loss = self.reconstruction(generated, original)
-        adversarial_loss = self.adversarial(fake_scores, torch.ones_like(fake_scores))
-        weight = progressive_reconstruction_weight(
-            epoch,
-            maximum_weight=self.reconstruction_max_weight,
-            progression_epochs=self.progression_epochs,
+        cell_mask: Tensor,
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        """Generator loss.
+
+        Args:
+            generated: Generated image [B,C,H,W].
+            original: Target/original image [B,C,H,W].
+            fake_scores: D(generated, label).
+            cell_mask: Flood-fill mask [B,1,H,W].
+                       1 = cell, 0 = black background.
+
+        Returns:
+            total_loss, cell_loss, background_loss, adversarial_loss
+        """
+        if cell_mask.ndim != 4:
+            raise ValueError(
+                f"cell_mask must be [B,1,H,W], got {cell_mask.shape}"
+            )
+
+        cell_mask = cell_mask.to(
+            device=generated.device,
+            dtype=generated.dtype,
         )
-        total = reconstruction_loss * weight + adversarial_loss / weight
-        return total, reconstruction_loss, adversarial_loss, weight
+
+        # Accept either binary [0,1] or image-style [0,255] masks.
+        if cell_mask.max().detach() > 1.0:
+            cell_mask = cell_mask / 255.0
+
+        cell_mask = (cell_mask > 0.5).to(generated.dtype)
+        background_mask = 1.0 - cell_mask
+
+        cell_loss = masked_l1(
+            generated, original, cell_mask, eps=self.eps
+        )
+
+        background_loss = masked_l1(
+            generated, original, background_mask, eps=self.eps
+        )
+
+        # Hinge generator objective.
+        adversarial_loss = -fake_scores.mean()
+
+        total = (
+            self.lambda_adv * adversarial_loss
+            + self.lambda_cell * cell_loss
+            + self.lambda_bg * background_loss
+        )
+
+        return total, cell_loss, background_loss, adversarial_loss
 
 
-__all__ = ["GliGANLoss", "progressive_reconstruction_weight"]
+__all__ = ["GliGANLoss", "masked_l1"]
