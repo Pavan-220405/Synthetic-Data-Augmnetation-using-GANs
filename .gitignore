@@ -30,6 +30,7 @@ artifacts/
 samples/
 runs/
 logs/
+*models*/
 
 # Model and medical-imaging artifacts
 *.pt
