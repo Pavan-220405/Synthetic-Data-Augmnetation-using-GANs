@@ -52,7 +52,7 @@ def masked_l1(
         )
 
     error = torch.abs(generated - target) * mask
-    denominator = mask.sum().clamp_min(eps)
+denominator = mask.sum().clamp_min(torch.finfo(mask.dtype).eps)
 
     return error.sum() / denominator
 
