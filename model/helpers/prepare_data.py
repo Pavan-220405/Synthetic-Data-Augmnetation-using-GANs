@@ -6,8 +6,8 @@ import shutil
 # CONFIGURATION
 # ============================================================
 
-SOURCE_ROOT = Path("GLIGAN_DATA")
-OUTPUT_ROOT = Path("data")
+SOURCE_ROOT = Path("model_data") / "GLIGAN_DATA/Fusion"
+OUTPUT_ROOT = Path("model_data") / "Fusion_DATA"
 
 IMAGE_DIR = OUTPUT_ROOT / "images"
 MASK_DIR = OUTPUT_ROOT / "masks"
@@ -33,7 +33,7 @@ total = 0
 skipped = 0
 
 # Find every subject folder containing images/
-for images_dir in SOURCE_ROOT.glob("*/*/images"):
+for images_dir in SOURCE_ROOT.glob("*/images"):
 
     subject_dir = images_dir.parent
     subject_name = subject_dir.name

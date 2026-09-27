@@ -15,9 +15,9 @@ from typing import Any, Mapping, Optional
 import torch
 from torch import Tensor, nn
 
-from discriminator import Discriminator
-from generator import Generator
-from losses import GliGANLoss
+from model.v1.discriminator import Discriminator
+from model.v1.generator import Generator
+from model.v1.losses import GliGANLoss
 
 
 @dataclass
@@ -45,7 +45,7 @@ class TrainConfig:
     amp: bool = True
     show_progress: bool = True
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    checkpoint_dir: str = "checkpoints"
+    checkpoint_dir: str = "model/checkpoints"
     checkpoint_every: int = 1
 
     def __post_init__(self) -> None:

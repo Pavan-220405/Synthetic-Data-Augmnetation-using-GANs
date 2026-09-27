@@ -8,7 +8,7 @@ import torch
 import matplotlib.pyplot as plt
 from PIL import Image
 
-from generator import Generator
+from model.v1.generator import Generator
 
 
 # ============================================================
@@ -17,11 +17,11 @@ from generator import Generator
 
 IMAGE_SIZE = 96
 
-TEST_DATA_DIR = Path("test_data")
+TEST_DATA_DIR = Path("model_data/test_data")
 LABEL_DIR = TEST_DATA_DIR / "labels"
 CELL_MASK_DIR = TEST_DATA_DIR / "cell_masks"
 
-DEFAULT_CHECKPOINT = Path("trained_models/epoch_0028.pt")
+DEFAULT_CHECKPOINT = Path("model/checkpoints/epoch_0028.pt")
 
 # Same noise settings used in preprocess_data.py
 GAUSSIAN_STD = 65.0

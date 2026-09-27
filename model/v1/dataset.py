@@ -54,7 +54,7 @@ class GliGANDataset(Dataset):
 
     def __init__(
         self,
-        root: str | Path = "data",
+        root: str | Path = "model_data",
         transform: Optional[Callable[[dict[str, Tensor]], dict[str, Tensor]]] = None,
     ) -> None:
         self.root = Path(root)
@@ -172,7 +172,7 @@ class GliGANDataset(Dataset):
 
 
 def build_dataloader(
-    root: str | Path = "data",
+    root: str | Path = "model_data",
     batch_size: int = 8,
     shuffle: bool = True,
     num_workers: int = 0,

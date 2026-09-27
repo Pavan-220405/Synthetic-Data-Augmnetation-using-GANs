@@ -148,14 +148,14 @@ def main():
 
     parser.add_argument(
         "--input_dir",
-        default="data/images",
-        help="Input directory (default: data/images)"
+        default="model_data/Fusion_DATA/images",
+        help="Input directory (default: model_data/Fusion_DATA/images)"
     )
 
     parser.add_argument(
         "--output_dir",
-        default="data/cell_masks",
-        help="Output directory (default: data/cell_masks)"
+        default="model_data/Fusion_DATA/cell_masks",
+        help="Output directory (default: model_data/Fusion_DATA/cell_masks)"
     )
 
     parser.add_argument(

@@ -11,10 +11,10 @@ from scipy import ndimage
 # ============================================================
 
 # Folder containing sets such as 6291_SJ, 6888_SJ, etc.
-INPUT_ROOT = Path("YOLO_TRAIN_DATA")
+INPUT_ROOT = Path("model_data") / "YOLO_TRAIN_DATA"
 
 # New dataset created by this script.
-OUTPUT_ROOT = Path("GLIGAN_DATA")
+OUTPUT_ROOT = Path("model_data") / "GLIGAN_DATA"
 
 # Remove the previous generated dataset before writing new samples.
 CLEAR_OUTPUT = True
